@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 import json
 import math
+import base64
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 from typing import List, Optional
 
@@ -91,6 +93,7 @@ class ArucoLayoutApp:
 
         self.markers: List[Marker] = []
         self._form_sync_in_progress = False
+        self.selected_marker_index: Optional[int] = None
         self._build_ui()
 
     def _build_ui(self):
@@ -244,7 +247,7 @@ class ArucoLayoutApp:
             self.tree.heading(c, text=c)
             self.tree.column(c, width=58 if c in ("idx", "id") else 84, anchor=tk.CENTER)
         self.tree.pack(fill=tk.BOTH, expand=True, pady=4)
-        self.tree.bind("<<TreeviewSelect>>", lambda _e: self.load_selected_into_form())
+        self.tree.bind("<<TreeviewSelect>>", self.on_tree_select)
         ttk.Label(left, text="Выделите несколько строк для комплексного экспорта", foreground="#555").pack(anchor="w", pady=(0, 6))
 
         self.canvas = tk.Canvas(right, bg="#1f1f1f", highlightthickness=0)
@@ -450,10 +453,9 @@ class ArucoLayoutApp:
         return max(m.marker_id for m in self.markers) + 1
 
     def load_selected_into_form(self):
-        sel = self.tree.selection()
-        if not sel:
+        idx = self.selected_marker_index
+        if idx is None:
             return
-        idx = self.tree.index(sel[0])
         if idx < 0 or idx >= len(self.markers):
             return
         m = self.markers[idx]
@@ -472,10 +474,9 @@ class ArucoLayoutApp:
         self._form_sync_in_progress = False
 
     def update_selected_marker(self):
-        sel = self.tree.selection()
-        if not sel:
+        idx = self.selected_marker_index
+        if idx is None:
             return
-        idx = self.tree.index(sel[0])
         if idx < 0 or idx >= len(self.markers):
             return
         if self.background_rgb is None:
@@ -521,6 +522,7 @@ class ArucoLayoutApp:
         self.update_scheme_size_fields()
 
     def select_marker_index(self, idx: int):
+        self.selected_marker_index = idx
         children = self.tree.get_children()
         if idx < 0 or idx >= len(children):
             return
@@ -528,6 +530,19 @@ class ArucoLayoutApp:
         self.tree.selection_set(item)
         self.tree.focus(item)
         self.tree.see(item)
+        self.load_selected_into_form()
+
+    def on_tree_select(self, _event=None):
+        sel = self.tree.selection()
+        if not sel:
+            self.selected_marker_index = None
+            return
+        idx = self.tree.index(sel[0])
+        if idx < 0 or idx >= len(self.markers):
+            self.selected_marker_index = None
+            return
+        self.selected_marker_index = idx
+        self.load_selected_into_form()
 
     def canvas_to_image(self, cx, cy):
         if self.background_rgb is None:
@@ -799,6 +814,7 @@ class ArucoLayoutApp:
             )
 
     def refresh_tree(self):
+        prev = self.selected_marker_index
         for item in self.tree.get_children():
             self.tree.delete(item)
         for i, m in enumerate(self.markers):
@@ -817,13 +833,26 @@ class ArucoLayoutApp:
                     round(m.rotation_deg, 2),
                 ),
             )
+        if prev is not None and 0 <= prev < len(self.markers):
+            self.select_marker_index(prev)
+        elif self.markers:
+            self.select_marker_index(0)
+        else:
+            self.selected_marker_index = None
 
     def delete_selected(self):
-        sel = self.tree.selection()
-        if not sel:
+        idx = self.selected_marker_index
+        if idx is None:
             return
-        idx = self.tree.index(sel[0])
+        if idx < 0 or idx >= len(self.markers):
+            return
         self.markers.pop(idx)
+        if not self.markers:
+            self.selected_marker_index = None
+        elif idx >= len(self.markers):
+            self.selected_marker_index = len(self.markers) - 1
+        else:
+            self.selected_marker_index = idx
         self.update_scheme_size_fields()
 
     def clear_markers(self):
@@ -912,8 +941,8 @@ class ArucoLayoutApp:
     def save_complex_marker_group(self, markers: List[Marker], out_dir: Path):
         # Export in metric space so marker sizes and gaps are preserved.
         ppm_export = max(self.EXPORT_PPM_MIN, int(round(float(self.ppm_var.get()))))
+        # Required polarity: black when colorInverted=true, white when false.
         bg_v = 0 if self.inverted_var.get() else 255
-        fg_v = 255 if self.inverted_var.get() else 0
 
         metric = []
         for m in markers:
@@ -934,29 +963,26 @@ class ArucoLayoutApp:
 
         canvas = np.full((h_px, w_px, 3), bg_v, dtype=np.uint8)
         for m, x_m, y_m, size_m, *_ in metric:
-            mat = self.get_marker_module_matrix(m)
-            modules = mat.shape[0]
-            side = max(modules, int(round(size_m * ppm_export)))
-            cell = side / modules
+            side = max(20, int(round(size_m * ppm_export)))
+            marker_rgb = self.render_marker_rgb(m, side)
             cx = (x_m - min_x) * ppm_export
             cy = (max_y - y_m) * ppm_export
-            x0 = cx - side / 2.0
-            y0 = cy - side / 2.0
-            for r in range(modules):
-                for c in range(modules):
-                    if mat[r, c] != 1:
-                        continue
-                    rx0 = int(round(x0 + c * cell))
-                    ry0 = int(round(y0 + r * cell))
-                    rx1 = int(round(x0 + (c + 1) * cell))
-                    ry1 = int(round(y0 + (r + 1) * cell))
-                    if rx1 <= 0 or ry1 <= 0 or rx0 >= w_px or ry0 >= h_px:
-                        continue
-                    cx0 = max(0, rx0)
-                    cy0 = max(0, ry0)
-                    cx1 = min(w_px, rx1)
-                    cy1 = min(h_px, ry1)
-                    canvas[cy0:cy1, cx0:cx1] = (fg_v, fg_v, fg_v)
+            x0 = int(round(cx - side / 2))
+            y0 = int(round(cy - side / 2))
+            x1 = x0 + side
+            y1 = y0 + side
+
+            cx0 = max(0, x0)
+            cy0 = max(0, y0)
+            cx1 = min(w_px, x1)
+            cy1 = min(h_px, y1)
+            if cx1 <= cx0 or cy1 <= cy0:
+                continue
+            mx0 = cx0 - x0
+            my0 = cy0 - y0
+            mx1 = mx0 + (cx1 - cx0)
+            my1 = my0 + (cy1 - cy0)
+            canvas[cy0:cy1, cx0:cx1] = marker_rgb[my0:my1, mx0:mx1]
 
         stem = "complex_marker"
         png_path = out_dir / f"{stem}.png"
@@ -964,7 +990,7 @@ class ArucoLayoutApp:
         Image.fromarray(canvas).save(png_path, dpi=(dpi, dpi))
 
         svg_path = out_dir / f"{stem}.svg"
-        self.save_complex_marker_group_svg(metric, svg_path, min_x, max_y, w_m, h_m, ppm_export)
+        self.save_embedded_png_svg(canvas, svg_path, w_m, h_m)
 
     @staticmethod
     def format_mm_tag(size_mm: float):
@@ -995,8 +1021,9 @@ class ArucoLayoutApp:
         size_m = float(marker.size_mm) / 1000.0
         mat = self.get_marker_module_matrix(marker)
         modules = mat.shape[0]
-        bg = "black" if self.inverted_var.get() else "white"
-        fg = "white" if self.inverted_var.get() else "black"
+        border_bit = int(mat[0, 0])  # 1 => black border, 0 => white border
+        bg = "black" if border_bit == 1 else "white"
+        fg = "white" if border_bit == 1 else "black"
         wmm = self._fmt_mm(size_m)
         hmm = self._fmt_mm(size_m)
         lines = [
@@ -1005,39 +1032,25 @@ class ArucoLayoutApp:
         ]
         for r in range(modules):
             for c in range(modules):
-                if mat[r, c] == 1:
+                if int(mat[r, c]) != border_bit:
                     lines.append(f'  <rect x="{c}" y="{r}" width="1" height="1" fill="{fg}"/>')
         lines.append("</svg>")
         svg_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    def save_complex_marker_group_svg(self, metric, svg_path: Path, min_x: float, max_y: float, w_m: float, h_m: float, ppm_export: int):
-        bg = "black" if self.inverted_var.get() else "white"
-        fg = "white" if self.inverted_var.get() else "black"
-        wmm = self._fmt_mm(w_m)
-        hmm = self._fmt_mm(h_m)
-        w_u = max(1, int(math.ceil(w_m * ppm_export)))
-        h_u = max(1, int(math.ceil(h_m * ppm_export)))
-        lines = [
-            f'<svg xmlns="http://www.w3.org/2000/svg" width="{wmm}mm" height="{hmm}mm" viewBox="0 0 {w_u} {h_u}" shape-rendering="crispEdges">',
-            f'  <rect x="0" y="0" width="{w_u}" height="{h_u}" fill="{bg}"/>',
-        ]
-        for m, x_m, y_m, size_m, *_ in metric:
-            mat = self.get_marker_module_matrix(m)
-            modules = mat.shape[0]
-            side_u = max(modules, int(round(size_m * ppm_export)))
-            cell = side_u / modules
-            cx_u = (x_m - min_x) * ppm_export
-            cy_u = (max_y - y_m) * ppm_export
-            x0 = cx_u - side_u / 2.0
-            y0 = cy_u - side_u / 2.0
-            for r in range(modules):
-                for c in range(modules):
-                    if mat[r, c] == 1:
-                        rx = x0 + c * cell
-                        ry = y0 + r * cell
-                        lines.append(f'  <rect x="{rx:.6f}" y="{ry:.6f}" width="{cell:.6f}" height="{cell:.6f}" fill="{fg}"/>')
-        lines.append("</svg>")
-        svg_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    def save_embedded_png_svg(self, image_rgb, svg_path: Path, width_m: float, height_m: float):
+        img = Image.fromarray(image_rgb)
+        buf = BytesIO()
+        img.save(buf, format="PNG")
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        w_px, h_px = image_rgb.shape[1], image_rgb.shape[0]
+        wmm = self._fmt_mm(width_m)
+        hmm = self._fmt_mm(height_m)
+        svg = (
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="{wmm}mm" height="{hmm}mm" viewBox="0 0 {w_px} {h_px}">\n'
+            f'  <image href="data:image/png;base64,{b64}" x="0" y="0" width="{w_px}" height="{h_px}" image-rendering="pixelated"/>\n'
+            f'</svg>\n'
+        )
+        svg_path.write_text(svg, encoding="utf-8")
 
     def import_layout(self):
         path = self.askopenfilename_big(filetypes=[("JSON", "*.json")])
