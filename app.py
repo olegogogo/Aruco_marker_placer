@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
-import base64
 import json
 import math
 from dataclasses import dataclass
-from io import BytesIO
 from pathlib import Path
 from typing import List, Optional
 
@@ -73,6 +71,7 @@ class Marker:
 
 
 class ArucoLayoutApp:
+    EXPORT_PPM_MIN = 3000
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("Aruco Marker Placer")
@@ -91,47 +90,48 @@ class ArucoLayoutApp:
         self.dxf_size_y_m: Optional[float] = None
 
         self.markers: List[Marker] = []
+        self._form_sync_in_progress = False
         self._build_ui()
 
     def _build_ui(self):
         style = ttk.Style()
         style.configure("MarkerTree.Treeview", rowheight=28)
 
-        main = ttk.Panedwindow(self.root, orient=tk.HORIZONTAL)
-        main.pack(fill=tk.BOTH, expand=True)
+        self.main_pane = ttk.Panedwindow(self.root, orient=tk.HORIZONTAL)
+        self.main_pane.pack(fill=tk.BOTH, expand=True)
 
-        left_wrap = ttk.Frame(main, width=380)
-        left_wrap.pack_propagate(False)
+        self.left_wrap = ttk.Frame(self.main_pane, width=560)
+        self.left_wrap.pack_propagate(False)
 
-        left_canvas = tk.Canvas(left_wrap, highlightthickness=0)
-        left_scroll = ttk.Scrollbar(left_wrap, orient=tk.VERTICAL, command=left_canvas.yview)
-        left_canvas.configure(yscrollcommand=left_scroll.set)
-        left_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(8, 0), pady=8)
+        self.left_canvas = tk.Canvas(self.left_wrap, highlightthickness=0)
+        left_scroll = ttk.Scrollbar(self.left_wrap, orient=tk.VERTICAL, command=self.left_canvas.yview)
+        self.left_canvas.configure(yscrollcommand=left_scroll.set)
+        self.left_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(8, 0), pady=8)
         left_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
-        left = ttk.Frame(left_canvas)
-        left_window = left_canvas.create_window((0, 0), window=left, anchor="nw")
+        left = ttk.Frame(self.left_canvas)
+        left_window = self.left_canvas.create_window((0, 0), window=left, anchor="nw")
 
         def _sync_left_scroll(_event=None):
-            left_canvas.configure(scrollregion=left_canvas.bbox("all"))
+            self.left_canvas.configure(scrollregion=self.left_canvas.bbox("all"))
 
         def _sync_left_width(event):
-            left_canvas.itemconfigure(left_window, width=event.width)
+            self.left_canvas.itemconfigure(left_window, width=event.width)
 
         left.bind("<Configure>", _sync_left_scroll)
-        left_canvas.bind("<Configure>", _sync_left_width)
+        self.left_canvas.bind("<Configure>", _sync_left_width)
 
         def _on_mousewheel(event):
-            left_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            self.left_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
-        left_canvas.bind("<MouseWheel>", _on_mousewheel)
-        left_canvas.bind("<Button-4>", lambda _e: left_canvas.yview_scroll(-1, "units"))
-        left_canvas.bind("<Button-5>", lambda _e: left_canvas.yview_scroll(1, "units"))
+        self.left_canvas.bind("<MouseWheel>", _on_mousewheel)
+        self.left_canvas.bind("<Button-4>", lambda _e: self.left_canvas.yview_scroll(-1, "units"))
+        self.left_canvas.bind("<Button-5>", lambda _e: self.left_canvas.yview_scroll(1, "units"))
 
-        right = ttk.Frame(main)
-        main.add(left_wrap, weight=0)
-        main.add(right, weight=1)
-        main.sashpos(0, 430)
+        right = ttk.Frame(self.main_pane)
+        self.main_pane.add(self.left_wrap, weight=1)
+        self.main_pane.add(right, weight=4)
+        self._init_left_panel_width()
 
         ttk.Label(left, text="Фон (чертеж/изображение)", font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
         ttk.Button(left, text="Загрузить фон", command=self.load_background).pack(fill=tk.X, pady=4)
@@ -159,7 +159,8 @@ class ArucoLayoutApp:
         self.size_y_entry.pack(fill=tk.X, pady=2)
 
         ttk.Label(left, text="pixelCountPerMeter").pack(anchor="w")
-        ttk.Entry(left, textvariable=self.ppm_var).pack(fill=tk.X, pady=2)
+        self.ppm_entry = ttk.Entry(left, textvariable=self.ppm_var)
+        self.ppm_entry.pack(fill=tk.X, pady=2)
 
         ttk.Checkbutton(left, text="colorInverted", variable=self.inverted_var).pack(anchor="w", pady=4)
         ttk.Checkbutton(
@@ -180,7 +181,8 @@ class ArucoLayoutApp:
 
         self.id_var = tk.IntVar(value=0)
         ttk.Label(left, text="ID").pack(anchor="w")
-        ttk.Spinbox(left, from_=0, to=2000, textvariable=self.id_var).pack(fill=tk.X, pady=2)
+        self.id_spin = ttk.Spinbox(left, from_=0, to=2000, textvariable=self.id_var)
+        self.id_spin.pack(fill=tk.X, pady=2)
 
         self.size_px_var = tk.IntVar(value=120)
         ttk.Label(left, text="Размер на фоне (px)").pack(anchor="w")
@@ -189,7 +191,8 @@ class ArucoLayoutApp:
 
         self.size_mm_var = tk.DoubleVar(value=220.0)
         ttk.Label(left, text="Реальный размер (mm)").pack(anchor="w")
-        ttk.Entry(left, textvariable=self.size_mm_var).pack(fill=tk.X, pady=2)
+        self.size_mm_entry = ttk.Entry(left, textvariable=self.size_mm_var)
+        self.size_mm_entry.pack(fill=tk.X, pady=2)
         ttk.Checkbutton(
             left,
             text="Авторасчет размера в px",
@@ -199,7 +202,16 @@ class ArucoLayoutApp:
 
         self.rotation_var = tk.DoubleVar(value=0.0)
         ttk.Label(left, text="Yaw / поворот (deg)").pack(anchor="w")
-        ttk.Entry(left, textvariable=self.rotation_var).pack(fill=tk.X, pady=2)
+        self.rotation_entry = ttk.Entry(left, textvariable=self.rotation_var)
+        self.rotation_entry.pack(fill=tk.X, pady=2)
+
+        self.place_with_mouse_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            left,
+            text="Разместить маркер мышкой (1 клик)",
+            variable=self.place_with_mouse_var,
+            command=self.on_place_mode_toggle,
+        ).pack(fill=tk.X, pady=4)
 
         ttk.Label(left, text="Клик по изображению: добавить маркер", foreground="#555").pack(anchor="w", pady=6)
         ttk.Label(left, text="Или введите координаты (m) и нажмите кнопку", foreground="#555").pack(anchor="w")
@@ -209,9 +221,11 @@ class ArucoLayoutApp:
         self.coord_x_m_var = tk.DoubleVar(value=0.0)
         self.coord_y_m_var = tk.DoubleVar(value=0.0)
         ttk.Label(coord_row, text="x").pack(side=tk.LEFT)
-        ttk.Entry(coord_row, textvariable=self.coord_x_m_var, width=10).pack(side=tk.LEFT, padx=(4, 10))
+        self.coord_x_entry = ttk.Entry(coord_row, textvariable=self.coord_x_m_var, width=10)
+        self.coord_x_entry.pack(side=tk.LEFT, padx=(4, 10))
         ttk.Label(coord_row, text="y").pack(side=tk.LEFT)
-        ttk.Entry(coord_row, textvariable=self.coord_y_m_var, width=10).pack(side=tk.LEFT, padx=4)
+        self.coord_y_entry = ttk.Entry(coord_row, textvariable=self.coord_y_m_var, width=10)
+        self.coord_y_entry.pack(side=tk.LEFT, padx=4)
         ttk.Button(left, text="Добавить маркер по координатам", command=self.add_marker_from_inputs).pack(fill=tk.X, pady=3)
         ttk.Button(left, text="Обновить выбранный маркер", command=self.update_selected_marker).pack(fill=tk.X, pady=2)
 
@@ -225,12 +239,13 @@ class ArucoLayoutApp:
 
         ttk.Label(left, text="Список маркеров", font=("TkDefaultFont", 10, "bold")).pack(anchor="w", pady=(10, 0))
         cols = ("idx", "dict", "id", "x_m", "y_m", "px", "mm", "yaw")
-        self.tree = ttk.Treeview(left, columns=cols, show="headings", height=18, style="MarkerTree.Treeview")
+        self.tree = ttk.Treeview(left, columns=cols, show="headings", height=18, style="MarkerTree.Treeview", selectmode="extended")
         for c in cols:
             self.tree.heading(c, text=c)
             self.tree.column(c, width=58 if c in ("idx", "id") else 84, anchor=tk.CENTER)
         self.tree.pack(fill=tk.BOTH, expand=True, pady=4)
         self.tree.bind("<<TreeviewSelect>>", lambda _e: self.load_selected_into_form())
+        ttk.Label(left, text="Выделите несколько строк для комплексного экспорта", foreground="#555").pack(anchor="w", pady=(0, 6))
 
         self.canvas = tk.Canvas(right, bg="#1f1f1f", highlightthickness=0)
         self.canvas.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
@@ -242,10 +257,12 @@ class ArucoLayoutApp:
         self.canvas.bind("<ButtonPress-2>", self.on_pan_start)
         self.canvas.bind("<B2-Motion>", self.on_pan_move)
         self.canvas.bind("<ButtonRelease-2>", self.on_pan_end)
-        self.ppm_var.trace_add("write", lambda *_: self.update_scheme_size_fields())
-        self.size_mm_var.trace_add("write", lambda *_: self.update_size_px_from_mm())
+        self.bind_form_commit_keys()
         self.on_auto_size_toggle()
         self.on_auto_marker_px_toggle()
+        self.root.bind_all("<MouseWheel>", self.on_global_mousewheel, add="+")
+        self.root.bind_all("<Button-4>", self.on_global_wheel_up, add="+")
+        self.root.bind_all("<Button-5>", self.on_global_wheel_down, add="+")
 
     def load_background(self):
         path = self.askopenfilename_big(filetypes=[("Images", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff")])
@@ -387,11 +404,14 @@ class ArucoLayoutApp:
     def on_canvas_click(self, event):
         if self.background_rgb is None:
             return
+        if not self.place_with_mouse_var.get():
+            return
         img_x, img_y = self.canvas_to_image(event.x, event.y)
         if img_x is None:
             return
 
         self.add_marker_by_px(float(img_x), float(img_y))
+        self.place_with_mouse_var.set(False)
 
     def add_marker_by_px(self, cx_px: float, cy_px: float):
         marker = Marker(
@@ -404,10 +424,11 @@ class ArucoLayoutApp:
             rotation_deg=float(self.rotation_var.get()),
         )
         self.markers.append(marker)
+        new_idx = len(self.markers) - 1
         x_m, y_m = self.px_to_m(cx_px, cy_px)
         self.coord_x_m_var.set(x_m)
         self.coord_y_m_var.set(y_m)
-        self.id_var.set(self.id_var.get() + 1)
+        self.select_marker_index(new_idx)
         self.update_scheme_size_fields()
 
     def add_marker_from_inputs(self):
@@ -419,6 +440,15 @@ class ArucoLayoutApp:
         cx_px, cy_px = self.m_to_px(x_m, y_m)
         self.add_marker_by_px(cx_px, cy_px)
 
+    def on_place_mode_toggle(self):
+        if self.place_with_mouse_var.get():
+            self.id_var.set(self.next_marker_id())
+
+    def next_marker_id(self):
+        if not self.markers:
+            return int(self.id_var.get())
+        return max(m.marker_id for m in self.markers) + 1
+
     def load_selected_into_form(self):
         sel = self.tree.selection()
         if not sel:
@@ -428,6 +458,7 @@ class ArucoLayoutApp:
             return
         m = self.markers[idx]
         x_m, y_m = self.px_to_m(m.cx_px, m.cy_px)
+        self._form_sync_in_progress = True
         self.dict_var.set(m.dictionary)
         self.id_var.set(int(m.marker_id))
         self.size_mm_var.set(float(m.size_mm))
@@ -438,11 +469,11 @@ class ArucoLayoutApp:
             self.size_px_var.set(int(m.size_px))
         else:
             self.update_size_px_from_mm()
+        self._form_sync_in_progress = False
 
     def update_selected_marker(self):
         sel = self.tree.selection()
         if not sel:
-            messagebox.showwarning("Внимание", "Выберите маркер в списке")
             return
         idx = self.tree.index(sel[0])
         if idx < 0 or idx >= len(self.markers):
@@ -464,6 +495,39 @@ class ArucoLayoutApp:
         m.rotation_deg = float(self.rotation_var.get())
         m.size_px = int(self.size_px_var.get())
         self.update_scheme_size_fields()
+
+    def bind_form_commit_keys(self):
+        widgets = [
+            self.size_x_entry,
+            self.size_y_entry,
+            self.ppm_entry,
+            self.id_spin,
+            self.size_px_spin,
+            self.size_mm_entry,
+            self.rotation_entry,
+            self.coord_x_entry,
+            self.coord_y_entry,
+        ]
+        for w in widgets:
+            w.bind("<Return>", self.apply_form_changes)
+            w.bind("<KP_Enter>", self.apply_form_changes)
+        self.dict_box.bind("<<ComboboxSelected>>", self.apply_form_changes)
+
+    def apply_form_changes(self, _event=None):
+        if self._form_sync_in_progress:
+            return
+        self.update_size_px_from_mm()
+        self.update_selected_marker()
+        self.update_scheme_size_fields()
+
+    def select_marker_index(self, idx: int):
+        children = self.tree.get_children()
+        if idx < 0 or idx >= len(children):
+            return
+        item = children[idx]
+        self.tree.selection_set(item)
+        self.tree.focus(item)
+        self.tree.see(item)
 
     def canvas_to_image(self, cx, cy):
         if self.background_rgb is None:
@@ -522,6 +586,35 @@ class ArucoLayoutApp:
             self.pan_x += (event.x - cx2)
             self.pan_y += (event.y - cy2)
         self.redraw()
+
+    def is_descendant(self, widget, parent):
+        while widget is not None:
+            if widget == parent:
+                return True
+            widget = widget.master
+        return False
+
+    def on_global_mousewheel(self, event):
+        target = self.root.winfo_containing(self.root.winfo_pointerx(), self.root.winfo_pointery())
+        if target is None:
+            return
+        if self.is_descendant(target, self.left_wrap):
+            delta = int(-1 * (event.delta / 120))
+            self.left_canvas.yview_scroll(delta, "units")
+
+    def on_global_wheel_up(self, event):
+        target = self.root.winfo_containing(self.root.winfo_pointerx(), self.root.winfo_pointery())
+        if target is None:
+            return
+        if self.is_descendant(target, self.left_wrap):
+            self.left_canvas.yview_scroll(-1, "units")
+
+    def on_global_wheel_down(self, event):
+        target = self.root.winfo_containing(self.root.winfo_pointerx(), self.root.winfo_pointery())
+        if target is None:
+            return
+        if self.is_descendant(target, self.left_wrap):
+            self.left_canvas.yview_scroll(1, "units")
 
     def on_pan_start(self, event):
         self._pan_last = (event.x, event.y)
@@ -776,8 +869,18 @@ class ArucoLayoutApp:
         json_path = out_dir / "scheme.json"
         json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
-        for m in self.markers:
-            side = max(80, int(m.size_px))
+        selected = set(self.get_selected_marker_indices())
+        group_markers = [self.markers[i] for i in sorted(selected) if 0 <= i < len(self.markers)]
+
+        if len(group_markers) >= 2:
+            self.save_complex_marker_group(group_markers, out_dir)
+
+        for i, m in enumerate(self.markers):
+            if i in selected and len(group_markers) >= 2:
+                continue
+            size_m = float(m.size_mm) / 1000.0
+            ppm_export = max(self.EXPORT_PPM_MIN, int(round(float(self.ppm_var.get()))))
+            side = max(200, int(round(size_m * ppm_export)))
             marker_rgb = self.render_marker_rgb(m, side)
             marker_bgr = cv2.cvtColor(marker_rgb, cv2.COLOR_RGB2BGR)
 
@@ -785,10 +888,11 @@ class ArucoLayoutApp:
             stem = f"id{m.marker_id}_{size_mm_tag}mm"
 
             png_path = out_dir / f"{stem}.png"
-            cv2.imwrite(str(png_path), marker_bgr)
+            dpi = max(150.0, ppm_export * 0.0254)
+            Image.fromarray(cv2.cvtColor(marker_bgr, cv2.COLOR_BGR2RGB)).save(png_path, dpi=(dpi, dpi))
 
             svg_path = out_dir / f"{stem}.svg"
-            self.save_svg_with_embedded_png(marker_rgb, svg_path, m.size_mm)
+            self.save_single_marker_svg(m, svg_path)
 
         preview = self.compose_preview()
         if preview is not None:
@@ -796,27 +900,144 @@ class ArucoLayoutApp:
 
         messagebox.showinfo("Готово", f"Проект сохранен в:\n{out_dir}")
 
+    def get_selected_marker_indices(self):
+        indices = []
+        for item in self.tree.selection():
+            try:
+                indices.append(self.tree.index(item))
+            except Exception:
+                continue
+        return indices
+
+    def save_complex_marker_group(self, markers: List[Marker], out_dir: Path):
+        # Export in metric space so marker sizes and gaps are preserved.
+        ppm_export = max(self.EXPORT_PPM_MIN, int(round(float(self.ppm_var.get()))))
+        bg_v = 0 if self.inverted_var.get() else 255
+        fg_v = 255 if self.inverted_var.get() else 0
+
+        metric = []
+        for m in markers:
+            x_m, y_m = self.px_to_m(m.cx_px, m.cy_px)
+            size_m = float(m.size_mm) / 1000.0
+            half = size_m / 2.0
+            metric.append((m, x_m, y_m, size_m, x_m - half, x_m + half, y_m - half, y_m + half))
+
+        min_x = min(v[4] for v in metric)
+        max_x = max(v[5] for v in metric)
+        min_y = min(v[6] for v in metric)
+        max_y = max(v[7] for v in metric)
+
+        w_m = max_x - min_x
+        h_m = max_y - min_y
+        w_px = max(1, int(math.ceil(w_m * ppm_export)))
+        h_px = max(1, int(math.ceil(h_m * ppm_export)))
+
+        canvas = np.full((h_px, w_px, 3), bg_v, dtype=np.uint8)
+        for m, x_m, y_m, size_m, *_ in metric:
+            mat = self.get_marker_module_matrix(m)
+            modules = mat.shape[0]
+            side = max(modules, int(round(size_m * ppm_export)))
+            cell = side / modules
+            cx = (x_m - min_x) * ppm_export
+            cy = (max_y - y_m) * ppm_export
+            x0 = cx - side / 2.0
+            y0 = cy - side / 2.0
+            for r in range(modules):
+                for c in range(modules):
+                    if mat[r, c] != 1:
+                        continue
+                    rx0 = int(round(x0 + c * cell))
+                    ry0 = int(round(y0 + r * cell))
+                    rx1 = int(round(x0 + (c + 1) * cell))
+                    ry1 = int(round(y0 + (r + 1) * cell))
+                    if rx1 <= 0 or ry1 <= 0 or rx0 >= w_px or ry0 >= h_px:
+                        continue
+                    cx0 = max(0, rx0)
+                    cy0 = max(0, ry0)
+                    cx1 = min(w_px, rx1)
+                    cy1 = min(h_px, ry1)
+                    canvas[cy0:cy1, cx0:cx1] = (fg_v, fg_v, fg_v)
+
+        stem = "complex_marker"
+        png_path = out_dir / f"{stem}.png"
+        dpi = max(150.0, ppm_export * 0.0254)
+        Image.fromarray(canvas).save(png_path, dpi=(dpi, dpi))
+
+        svg_path = out_dir / f"{stem}.svg"
+        self.save_complex_marker_group_svg(metric, svg_path, min_x, max_y, w_m, h_m, ppm_export)
+
     @staticmethod
     def format_mm_tag(size_mm: float):
         txt = f"{size_mm:.3f}".rstrip("0").rstrip(".")
         return txt.replace(".", "_")
 
-    @staticmethod
-    def save_svg_with_embedded_png(marker_rgb, svg_path: Path, size_mm: float):
-        img = Image.fromarray(marker_rgb)
-        buf = BytesIO()
-        img.save(buf, format="PNG")
-        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+    def get_marker_module_matrix(self, marker: Marker):
+        dictionary = cv2.aruco.getPredefinedDictionary(ARUCO_DICTS[marker.dictionary])
+        marker_size = int(dictionary.markerSize)
+        modules_total = marker_size + 2
+        side = modules_total * 16
+        img = cv2.aruco.generateImageMarker(dictionary, marker.marker_id, side)
+        module = side // modules_total
+        mat = np.zeros((modules_total, modules_total), dtype=np.uint8)
+        for r in range(modules_total):
+            for c in range(modules_total):
+                block = img[r * module:(r + 1) * module, c * module:(c + 1) * module]
+                mat[r, c] = 1 if int(block.mean()) < 128 else 0
+        if self.inverted_var.get():
+            mat = 1 - mat
+        return mat
 
-        w_px, h_px = marker_rgb.shape[1], marker_rgb.shape[0]
-        size_mm_txt = f"{size_mm:.3f}".rstrip("0").rstrip(".")
-        svg = (
-            f"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{size_mm_txt}mm\" height=\"{size_mm_txt}mm\" "
-            f"viewBox=\"0 0 {w_px} {h_px}\">\n"
-            f"  <image href=\"data:image/png;base64,{b64}\" x=\"0\" y=\"0\" width=\"{w_px}\" height=\"{h_px}\"/>\n"
-            f"</svg>\n"
-        )
-        svg_path.write_text(svg, encoding="utf-8")
+    @staticmethod
+    def _fmt_mm(v_m: float):
+        return f"{v_m * 1000.0:.6f}"
+
+    def save_single_marker_svg(self, marker: Marker, svg_path: Path):
+        size_m = float(marker.size_mm) / 1000.0
+        mat = self.get_marker_module_matrix(marker)
+        modules = mat.shape[0]
+        bg = "black" if self.inverted_var.get() else "white"
+        fg = "white" if self.inverted_var.get() else "black"
+        wmm = self._fmt_mm(size_m)
+        hmm = self._fmt_mm(size_m)
+        lines = [
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="{wmm}mm" height="{hmm}mm" viewBox="0 0 {modules} {modules}" shape-rendering="crispEdges">',
+            f'  <rect x="0" y="0" width="{modules}" height="{modules}" fill="{bg}"/>',
+        ]
+        for r in range(modules):
+            for c in range(modules):
+                if mat[r, c] == 1:
+                    lines.append(f'  <rect x="{c}" y="{r}" width="1" height="1" fill="{fg}"/>')
+        lines.append("</svg>")
+        svg_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def save_complex_marker_group_svg(self, metric, svg_path: Path, min_x: float, max_y: float, w_m: float, h_m: float, ppm_export: int):
+        bg = "black" if self.inverted_var.get() else "white"
+        fg = "white" if self.inverted_var.get() else "black"
+        wmm = self._fmt_mm(w_m)
+        hmm = self._fmt_mm(h_m)
+        w_u = max(1, int(math.ceil(w_m * ppm_export)))
+        h_u = max(1, int(math.ceil(h_m * ppm_export)))
+        lines = [
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="{wmm}mm" height="{hmm}mm" viewBox="0 0 {w_u} {h_u}" shape-rendering="crispEdges">',
+            f'  <rect x="0" y="0" width="{w_u}" height="{h_u}" fill="{bg}"/>',
+        ]
+        for m, x_m, y_m, size_m, *_ in metric:
+            mat = self.get_marker_module_matrix(m)
+            modules = mat.shape[0]
+            side_u = max(modules, int(round(size_m * ppm_export)))
+            cell = side_u / modules
+            cx_u = (x_m - min_x) * ppm_export
+            cy_u = (max_y - y_m) * ppm_export
+            x0 = cx_u - side_u / 2.0
+            y0 = cy_u - side_u / 2.0
+            for r in range(modules):
+                for c in range(modules):
+                    if mat[r, c] == 1:
+                        rx = x0 + c * cell
+                        ry = y0 + r * cell
+                        lines.append(f'  <rect x="{rx:.6f}" y="{ry:.6f}" width="{cell:.6f}" height="{cell:.6f}" fill="{fg}"/>')
+        lines.append("</svg>")
+        svg_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     def import_layout(self):
         path = self.askopenfilename_big(filetypes=[("JSON", "*.json")])
@@ -888,6 +1109,22 @@ class ArucoLayoutApp:
             return filedialog.askdirectory(parent=self.root, **kwargs)
         finally:
             self.root.tk.call("tk", "scaling", scale)
+
+    def _init_left_panel_width(self):
+        def apply():
+            total_w = max(1, self.main_pane.winfo_width())
+            desired = 560
+            # Keep right pane visible even on smaller screens.
+            pos = min(desired, max(420, total_w - 520))
+            try:
+                self.main_pane.sashpos(0, pos)
+            except Exception:
+                pass
+
+        # Apply a few times during initial layout pass (WM can override early values).
+        self.root.after(10, apply)
+        self.root.after(80, apply)
+        self.root.after(200, apply)
 
 
 def main():
