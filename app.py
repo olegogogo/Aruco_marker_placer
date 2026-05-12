@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
+import base64
 import json
-import math
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 from typing import List, Optional
 
 import cv2
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
 from PIL import Image, ImageTk
+from tkinter import filedialog, messagebox, ttk
 
 
 ARUCO_DICTS = {
@@ -31,6 +32,27 @@ ARUCO_DICTS = {
     "DICT_ARUCO_ORIGINAL": cv2.aruco.DICT_ARUCO_ORIGINAL,
 }
 
+DICT_TO_SCHEME_TYPE = {
+    "DICT_4X4_50": "Aruco_4x4_50",
+    "DICT_4X4_100": "Aruco_4x4_100",
+    "DICT_4X4_250": "Aruco_4x4_250",
+    "DICT_4X4_1000": "Aruco_4x4_1000",
+    "DICT_5X5_50": "Aruco_5x5_50",
+    "DICT_5X5_100": "Aruco_5x5_100",
+    "DICT_5X5_250": "Aruco_5x5_250",
+    "DICT_5X5_1000": "Aruco_5x5_1000",
+    "DICT_6X6_50": "Aruco_6x6_50",
+    "DICT_6X6_100": "Aruco_6x6_100",
+    "DICT_6X6_250": "Aruco_6x6_250",
+    "DICT_6X6_1000": "Aruco_6x6_1000",
+    "DICT_7X7_50": "Aruco_7x7_50",
+    "DICT_7X7_100": "Aruco_7x7_100",
+    "DICT_7X7_250": "Aruco_7x7_250",
+    "DICT_7X7_1000": "Aruco_7x7_1000",
+    "DICT_ARUCO_ORIGINAL": "Aruco_original",
+}
+SCHEME_TYPE_TO_DICT = {v: k for k, v in DICT_TO_SCHEME_TYPE.items()}
+
 
 @dataclass
 class Marker:
@@ -47,23 +69,21 @@ class ArucoLayoutApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("Aruco Marker Placer")
-        self.root.geometry("1400x900")
+        self.root.geometry("1450x920")
 
         self.background_path: Optional[Path] = None
-        self.background_bgr = None
         self.background_rgb = None
         self.tk_image = None
         self.scale = 1.0
 
         self.markers: List[Marker] = []
-
         self._build_ui()
 
     def _build_ui(self):
         main = ttk.Frame(self.root)
         main.pack(fill=tk.BOTH, expand=True)
 
-        left = ttk.Frame(main, width=350)
+        left = ttk.Frame(main, width=380)
         left.pack(side=tk.LEFT, fill=tk.Y, padx=8, pady=8)
 
         right = ttk.Frame(main)
@@ -74,9 +94,28 @@ class ArucoLayoutApp:
 
         ttk.Separator(left).pack(fill=tk.X, pady=8)
 
+        ttk.Label(left, text="Параметры схемы (JSON)", font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
+        self.size_x_var = tk.DoubleVar(value=0.9)
+        self.size_y_var = tk.DoubleVar(value=0.9)
+        self.ppm_var = tk.DoubleVar(value=2500.0)
+        self.inverted_var = tk.BooleanVar(value=True)
+
+        ttk.Label(left, text="sizeX (m)").pack(anchor="w")
+        ttk.Entry(left, textvariable=self.size_x_var).pack(fill=tk.X, pady=2)
+
+        ttk.Label(left, text="sizeY (m)").pack(anchor="w")
+        ttk.Entry(left, textvariable=self.size_y_var).pack(fill=tk.X, pady=2)
+
+        ttk.Label(left, text="pixelCountPerMeter").pack(anchor="w")
+        ttk.Entry(left, textvariable=self.ppm_var).pack(fill=tk.X, pady=2)
+
+        ttk.Checkbutton(left, text="colorInverted", variable=self.inverted_var).pack(anchor="w", pady=4)
+
+        ttk.Separator(left).pack(fill=tk.X, pady=8)
+
         ttk.Label(left, text="Параметры маркера", font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
 
-        self.dict_var = tk.StringVar(value="DICT_6X6_250")
+        self.dict_var = tk.StringVar(value="DICT_4X4_50")
         ttk.Label(left, text="Словарь").pack(anchor="w")
         self.dict_box = ttk.Combobox(left, textvariable=self.dict_var, values=sorted(ARUCO_DICTS.keys()), state="readonly")
         self.dict_box.pack(fill=tk.X, pady=2)
@@ -86,33 +125,33 @@ class ArucoLayoutApp:
         ttk.Spinbox(left, from_=0, to=2000, textvariable=self.id_var).pack(fill=tk.X, pady=2)
 
         self.size_px_var = tk.IntVar(value=120)
-        ttk.Label(left, text="Размер на изображении (px)").pack(anchor="w")
-        ttk.Spinbox(left, from_=20, to=1200, textvariable=self.size_px_var).pack(fill=tk.X, pady=2)
+        ttk.Label(left, text="Размер на фоне (px)").pack(anchor="w")
+        ttk.Spinbox(left, from_=20, to=2000, textvariable=self.size_px_var).pack(fill=tk.X, pady=2)
 
-        self.size_mm_var = tk.DoubleVar(value=130.0)
-        ttk.Label(left, text="Физический размер (mm)").pack(anchor="w")
+        self.size_mm_var = tk.DoubleVar(value=220.0)
+        ttk.Label(left, text="Реальный размер (mm)").pack(anchor="w")
         ttk.Entry(left, textvariable=self.size_mm_var).pack(fill=tk.X, pady=2)
 
         self.rotation_var = tk.DoubleVar(value=0.0)
-        ttk.Label(left, text="Поворот (deg)").pack(anchor="w")
+        ttk.Label(left, text="Yaw / поворот (deg)").pack(anchor="w")
         ttk.Entry(left, textvariable=self.rotation_var).pack(fill=tk.X, pady=2)
 
         ttk.Label(left, text="Клик по изображению: добавить маркер", foreground="#555").pack(anchor="w", pady=6)
 
-        ttk.Button(left, text="Удалить выбранный", command=self.delete_selected).pack(fill=tk.X, pady=4)
+        ttk.Button(left, text="Удалить выбранный", command=self.delete_selected).pack(fill=tk.X, pady=3)
         ttk.Button(left, text="Очистить все", command=self.clear_markers).pack(fill=tk.X, pady=2)
 
         ttk.Separator(left).pack(fill=tk.X, pady=8)
 
-        ttk.Button(left, text="Сохранить YAML + Preview", command=self.export_layout).pack(fill=tk.X, pady=3)
-        ttk.Button(left, text="Загрузить YAML", command=self.import_layout).pack(fill=tk.X, pady=3)
+        ttk.Button(left, text="Сохранить проект в папку", command=self.export_project_folder).pack(fill=tk.X, pady=3)
+        ttk.Button(left, text="Импорт JSON схемы", command=self.import_layout).pack(fill=tk.X, pady=3)
 
         ttk.Label(left, text="Список маркеров", font=("TkDefaultFont", 10, "bold")).pack(anchor="w", pady=(10, 0))
-        cols = ("idx", "dict", "id", "x", "y", "px", "mm", "rot")
+        cols = ("idx", "dict", "id", "x_m", "y_m", "px", "mm", "yaw")
         self.tree = ttk.Treeview(left, columns=cols, show="headings", height=18)
         for c in cols:
             self.tree.heading(c, text=c)
-            self.tree.column(c, width=48 if c in ("idx", "id") else 70, anchor=tk.CENTER)
+            self.tree.column(c, width=52 if c in ("idx", "id") else 66, anchor=tk.CENTER)
         self.tree.pack(fill=tk.BOTH, expand=True, pady=4)
 
         self.canvas = tk.Canvas(right, bg="#1f1f1f", highlightthickness=0)
@@ -129,7 +168,6 @@ class ArucoLayoutApp:
             messagebox.showerror("Ошибка", "Не удалось открыть изображение")
             return
         self.background_path = Path(path)
-        self.background_bgr = bgr
         self.background_rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         self.redraw()
 
@@ -185,10 +223,35 @@ class ArucoLayoutApp:
 
         return ox + ix * self.scale, oy + iy * self.scale
 
-    def render_marker(self, marker: Marker, side_px: int):
+    def px_to_m(self, cx_px: float, cy_px: float):
+        if self.background_rgb is None:
+            return 0.0, 0.0
+        ppm = float(self.ppm_var.get())
+        if ppm <= 0:
+            ppm = 1.0
+        h, w = self.background_rgb.shape[:2]
+        x_m = (cx_px - (w / 2.0)) / ppm
+        y_m = ((h / 2.0) - cy_px) / ppm
+        return x_m, y_m
+
+    def m_to_px(self, x_m: float, y_m: float):
+        if self.background_rgb is None:
+            return 0.0, 0.0
+        ppm = float(self.ppm_var.get())
+        if ppm <= 0:
+            ppm = 1.0
+        h, w = self.background_rgb.shape[:2]
+        cx_px = (w / 2.0) + x_m * ppm
+        cy_px = (h / 2.0) - y_m * ppm
+        return cx_px, cy_px
+
+    def render_marker_rgb(self, marker: Marker, side_px: int):
         dictionary = cv2.aruco.getPredefinedDictionary(ARUCO_DICTS[marker.dictionary])
-        img = cv2.aruco.generateImageMarker(dictionary, marker.marker_id, side_px)
-        rgb = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
+        marker_img = cv2.aruco.generateImageMarker(dictionary, marker.marker_id, side_px)
+        rgb = cv2.cvtColor(marker_img, cv2.COLOR_GRAY2RGB)
+
+        if self.inverted_var.get():
+            rgb = 255 - rgb
 
         if abs(marker.rotation_deg) > 1e-6:
             c = side_px / 2.0
@@ -204,7 +267,7 @@ class ArucoLayoutApp:
 
         for m in self.markers:
             side = max(20, int(m.size_px))
-            marker_rgb = self.render_marker(m, side)
+            marker_rgb = self.render_marker_rgb(m, side)
             x0 = int(round(m.cx_px - side / 2))
             y0 = int(round(m.cy_px - side / 2))
             x1 = x0 + side
@@ -223,8 +286,7 @@ class ArucoLayoutApp:
             mx1 = mx0 + (cx1 - cx0)
             my1 = my0 + (cy1 - cy0)
 
-            roi = marker_rgb[my0:my1, mx0:mx1]
-            out[cy0:cy1, cx0:cx1] = roi
+            out[cy0:cy1, cx0:cx1] = marker_rgb[my0:my1, mx0:mx1]
 
         return out
 
@@ -242,9 +304,7 @@ class ArucoLayoutApp:
         sw, sh = int(w * scale), int(h * scale)
         resized = cv2.resize(preview, (sw, sh), interpolation=cv2.INTER_AREA)
 
-        pil = Image.fromarray(resized)
-        self.tk_image = ImageTk.PhotoImage(pil)
-
+        self.tk_image = ImageTk.PhotoImage(Image.fromarray(resized))
         ox = (cw - sw) // 2
         oy = (ch - sh) // 2
         self.canvas.create_image(ox, oy, anchor=tk.NW, image=self.tk_image)
@@ -252,13 +312,21 @@ class ArucoLayoutApp:
         for i, m in enumerate(self.markers):
             x, y = self.image_to_canvas(m.cx_px, m.cy_px)
             r = (m.size_px * scale) / 2
+            x_m, y_m = self.px_to_m(m.cx_px, m.cy_px)
             self.canvas.create_rectangle(x - r, y - r, x + r, y + r, outline="#00d7ff", width=2)
-            self.canvas.create_text(x, y - r - 10, text=f"#{i} id={m.marker_id}", fill="#00d7ff", font=("TkDefaultFont", 9, "bold"))
+            self.canvas.create_text(
+                x,
+                y - r - 10,
+                text=f"#{i} id={m.marker_id} ({x_m:.3f},{y_m:.3f})m",
+                fill="#00d7ff",
+                font=("TkDefaultFont", 9, "bold"),
+            )
 
     def refresh_tree(self):
         for item in self.tree.get_children():
             self.tree.delete(item)
         for i, m in enumerate(self.markers):
+            x_m, y_m = self.px_to_m(m.cx_px, m.cy_px)
             self.tree.insert(
                 "",
                 tk.END,
@@ -266,8 +334,8 @@ class ArucoLayoutApp:
                     i,
                     m.dictionary,
                     m.marker_id,
-                    round(m.cx_px, 1),
-                    round(m.cy_px, 1),
+                    round(x_m, 4),
+                    round(y_m, 4),
                     m.size_px,
                     round(m.size_mm, 2),
                     round(m.rotation_deg, 2),
@@ -288,173 +356,127 @@ class ArucoLayoutApp:
         self.refresh_tree()
         self.redraw()
 
-    def export_layout(self):
+    def scheme_payload(self):
+        markers = []
+        for m in self.markers:
+            x_m, y_m = self.px_to_m(m.cx_px, m.cy_px)
+            markers.append(
+                {
+                    "id": int(m.marker_id),
+                    "type": DICT_TO_SCHEME_TYPE.get(m.dictionary, "Aruco_4x4_50"),
+                    "x": float(x_m),
+                    "y": float(y_m),
+                    "size": float(m.size_mm) / 1000.0,
+                    "yaw": float(m.rotation_deg),
+                }
+            )
+
+        return {
+            "sizeX": float(self.size_x_var.get()),
+            "sizeY": float(self.size_y_var.get()),
+            "pixelCountPerMeter": float(self.ppm_var.get()),
+            "colorInverted": bool(self.inverted_var.get()),
+            "markers": markers,
+        }
+
+    def export_project_folder(self):
         if self.background_rgb is None:
             messagebox.showwarning("Внимание", "Сначала загрузите фон")
             return
 
-        save_path = filedialog.asksaveasfilename(defaultextension=".yaml", filetypes=[("YAML", "*.yaml *.yml")])
-        if not save_path:
+        folder = filedialog.askdirectory(title="Выберите папку проекта")
+        if not folder:
             return
 
-        payload = {
-            "version": 1,
-            "background_image": str(self.background_path) if self.background_path else None,
-            "image_size_px": {
-                "width": int(self.background_rgb.shape[1]),
-                "height": int(self.background_rgb.shape[0]),
-            },
-            "markers": [asdict(m) for m in self.markers],
-        }
+        out_dir = Path(folder)
+        out_dir.mkdir(parents=True, exist_ok=True)
 
-        yaml_text = self.to_simple_yaml(payload)
-        out_yaml = Path(save_path)
-        out_yaml.write_text(yaml_text, encoding="utf-8")
+        payload = self.scheme_payload()
+        json_path = out_dir / "scheme.json"
+        json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        for m in self.markers:
+            side = max(80, int(m.size_px))
+            marker_rgb = self.render_marker_rgb(m, side)
+            marker_bgr = cv2.cvtColor(marker_rgb, cv2.COLOR_RGB2BGR)
+
+            size_mm_tag = self.format_mm_tag(m.size_mm)
+            stem = f"id{m.marker_id}_{size_mm_tag}mm"
+
+            png_path = out_dir / f"{stem}.png"
+            cv2.imwrite(str(png_path), marker_bgr)
+
+            svg_path = out_dir / f"{stem}.svg"
+            self.save_svg_with_embedded_png(marker_rgb, svg_path, m.size_mm)
 
         preview = self.compose_preview()
         if preview is not None:
-            png_path = out_yaml.with_suffix(".preview.png")
-            cv2.imwrite(str(png_path), cv2.cvtColor(preview, cv2.COLOR_RGB2BGR))
+            cv2.imwrite(str(out_dir / "layout.preview.png"), cv2.cvtColor(preview, cv2.COLOR_RGB2BGR))
 
-        messagebox.showinfo("Готово", f"Сохранено:\n{out_yaml}\n{out_yaml.with_suffix('.preview.png')}")
+        messagebox.showinfo("Готово", f"Проект сохранен в:\n{out_dir}")
+
+    @staticmethod
+    def format_mm_tag(size_mm: float):
+        txt = f"{size_mm:.3f}".rstrip("0").rstrip(".")
+        return txt.replace(".", "_")
+
+    @staticmethod
+    def save_svg_with_embedded_png(marker_rgb, svg_path: Path, size_mm: float):
+        img = Image.fromarray(marker_rgb)
+        buf = BytesIO()
+        img.save(buf, format="PNG")
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+
+        w_px, h_px = marker_rgb.shape[1], marker_rgb.shape[0]
+        size_mm_txt = f"{size_mm:.3f}".rstrip("0").rstrip(".")
+        svg = (
+            f"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{size_mm_txt}mm\" height=\"{size_mm_txt}mm\" "
+            f"viewBox=\"0 0 {w_px} {h_px}\">\n"
+            f"  <image href=\"data:image/png;base64,{b64}\" x=\"0\" y=\"0\" width=\"{w_px}\" height=\"{h_px}\"/>\n"
+            f"</svg>\n"
+        )
+        svg_path.write_text(svg, encoding="utf-8")
 
     def import_layout(self):
-        path = filedialog.askopenfilename(filetypes=[("YAML", "*.yaml *.yml"), ("JSON", "*.json")])
+        path = filedialog.askopenfilename(filetypes=[("JSON", "*.json")])
         if not path:
             return
 
-        txt = Path(path).read_text(encoding="utf-8")
-        data = self.parse_yaml_or_json(txt)
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        self.size_x_var.set(float(data.get("sizeX", self.size_x_var.get())))
+        self.size_y_var.set(float(data.get("sizeY", self.size_y_var.get())))
+        self.ppm_var.set(float(data.get("pixelCountPerMeter", self.ppm_var.get())))
+        self.inverted_var.set(bool(data.get("colorInverted", self.inverted_var.get())))
 
-        bg = data.get("background_image")
-        if bg and Path(bg).exists():
-            self.background_path = Path(bg)
-            bgr = cv2.imread(bg, cv2.IMREAD_COLOR)
-            if bgr is not None:
-                self.background_bgr = bgr
-                self.background_rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-
-        self.markers = []
+        self.markers.clear()
         for raw in data.get("markers", []):
+            dictionary = SCHEME_TYPE_TO_DICT.get(str(raw.get("type", "Aruco_4x4_50")), "DICT_4X4_50")
+            x_m = float(raw.get("x", 0.0))
+            y_m = float(raw.get("y", 0.0))
+            cx_px, cy_px = self.m_to_px(x_m, y_m)
+            size_m = float(raw.get("size", 0.1))
+            size_mm = size_m * 1000.0
+            size_px = max(20, int(round(size_m * float(self.ppm_var.get()))))
+
             self.markers.append(
                 Marker(
-                    marker_id=int(raw["marker_id"]),
-                    dictionary=str(raw["dictionary"]),
-                    cx_px=float(raw["cx_px"]),
-                    cy_px=float(raw["cy_px"]),
-                    size_px=int(raw["size_px"]),
-                    size_mm=float(raw.get("size_mm", 0.0)),
-                    rotation_deg=float(raw.get("rotation_deg", 0.0)),
+                    marker_id=int(raw.get("id", 0)),
+                    dictionary=dictionary,
+                    cx_px=float(cx_px),
+                    cy_px=float(cy_px),
+                    size_px=size_px,
+                    size_mm=size_mm,
+                    rotation_deg=float(raw.get("yaw", 0.0)),
                 )
             )
 
         self.refresh_tree()
         self.redraw()
 
-    @staticmethod
-    def to_simple_yaml(data, indent=0):
-        # Compact serializer to avoid external pyyaml dependency.
-        sp = "  " * indent
-        if isinstance(data, dict):
-            lines = []
-            for k, v in data.items():
-                if isinstance(v, (dict, list)):
-                    lines.append(f"{sp}{k}:")
-                    lines.append(ArucoLayoutApp.to_simple_yaml(v, indent + 1))
-                else:
-                    lines.append(f"{sp}{k}: {ArucoLayoutApp.yaml_scalar(v)}")
-            return "\n".join(lines)
-        if isinstance(data, list):
-            lines = []
-            for item in data:
-                if isinstance(item, (dict, list)):
-                    lines.append(f"{sp}-")
-                    lines.append(ArucoLayoutApp.to_simple_yaml(item, indent + 1))
-                else:
-                    lines.append(f"{sp}- {ArucoLayoutApp.yaml_scalar(item)}")
-            return "\n".join(lines)
-        return f"{sp}{ArucoLayoutApp.yaml_scalar(data)}"
-
-    @staticmethod
-    def yaml_scalar(v):
-        if v is None:
-            return "null"
-        if isinstance(v, bool):
-            return "true" if v else "false"
-        if isinstance(v, (int, float)):
-            return str(v)
-        s = str(v)
-        s = s.replace("\\", "\\\\").replace('"', '\\"')
-        return f'"{s}"'
-
-    @staticmethod
-    def parse_yaml_or_json(text: str):
-        # For supported export format we can parse via json fallback:
-        # Try json first, then very small yaml subset parser.
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            pass
-
-        # Minimal YAML parser for the exact structure we export.
-        lines = [ln.rstrip() for ln in text.splitlines() if ln.strip() and not ln.strip().startswith("#")]
-        root = {}
-        i = 0
-
-        def parse_scalar(s):
-            s = s.strip()
-            if s == "null":
-                return None
-            if s in ("true", "false"):
-                return s == "true"
-            if s.startswith('"') and s.endswith('"'):
-                return s[1:-1].replace('\\"', '"').replace("\\\\", "\\")
-            try:
-                if "." in s:
-                    return float(s)
-                return int(s)
-            except ValueError:
-                return s
-
-        markers = []
-        current = None
-        in_markers = False
-        for ln in lines:
-            st = ln.strip()
-            if st.startswith("markers:"):
-                in_markers = True
-                continue
-            if not in_markers:
-                if ":" in st:
-                    k, v = st.split(":", 1)
-                    k = k.strip()
-                    v = v.strip()
-                    if v == "":
-                        root[k] = {}
-                    else:
-                        root[k] = parse_scalar(v)
-                continue
-
-            if st == "-":
-                if current:
-                    markers.append(current)
-                current = {}
-                continue
-
-            if ":" in st and current is not None:
-                k, v = st.split(":", 1)
-                current[k.strip()] = parse_scalar(v)
-
-        if current:
-            markers.append(current)
-
-        root["markers"] = markers
-        return root
-
 
 def main():
     root = tk.Tk()
-    app = ArucoLayoutApp(root)
+    ArucoLayoutApp(root)
     root.mainloop()
 
 
