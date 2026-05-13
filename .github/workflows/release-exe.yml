@@ -1,0 +1,66 @@
+name: Build and Release EXE
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Optional existing tag to attach artifacts to (e.g. v1.2.3)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build EXE
+        shell: pwsh
+        run: |
+          pyinstaller app.spec --noconfirm
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ArucoMarkerPlacer-windows
+          path: dist/*.exe
+
+      - name: Resolve release tag
+        id: tag
+        shell: pwsh
+        run: |
+          if ('${{ github.event_name }}' -eq 'push') {
+            "tag=${{ github.ref_name }}" >> $env:GITHUB_OUTPUT
+          }
+          elseif ('${{ github.event.inputs.release_tag }}' -ne '') {
+            "tag=${{ github.event.inputs.release_tag }}" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Publish GitHub Release asset
+        if: steps.tag.outputs.tag != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          files: dist/*.exe
+          fail_on_unmatched_files: true
+          generate_release_notes: true

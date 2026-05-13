@@ -2,3 +2,6 @@ scheme(5).json
 .venv/
 projects/
 __pycache__/
+build/
+dist/
+*.pyc
