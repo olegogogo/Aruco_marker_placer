@@ -113,6 +113,7 @@ class ArucoLayoutApp:
         left_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
         left = ttk.Frame(self.left_canvas)
+        self.param_frame = left
         left_window = self.left_canvas.create_window((0, 0), window=left, anchor="nw")
 
         def _sync_left_scroll(_event=None):
@@ -124,12 +125,9 @@ class ArucoLayoutApp:
         left.bind("<Configure>", _sync_left_scroll)
         self.left_canvas.bind("<Configure>", _sync_left_width)
 
-        def _on_mousewheel(event):
-            self.left_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-
-        self.left_canvas.bind("<MouseWheel>", _on_mousewheel)
-        self.left_canvas.bind("<Button-4>", lambda _e: self.left_canvas.yview_scroll(-1, "units"))
-        self.left_canvas.bind("<Button-5>", lambda _e: self.left_canvas.yview_scroll(1, "units"))
+        self.left_canvas.bind("<MouseWheel>", self.on_param_wheel)
+        self.left_canvas.bind("<Button-4>", lambda _e: self.on_param_wheel_linux(-1))
+        self.left_canvas.bind("<Button-5>", lambda _e: self.on_param_wheel_linux(1))
 
         right = ttk.Frame(self.main_pane)
         self.main_pane.add(self.left_wrap, weight=1)
@@ -139,18 +137,12 @@ class ArucoLayoutApp:
         ttk.Label(left, text="Фон (чертеж/изображение)", font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
         ttk.Button(left, text="Загрузить фон", command=self.load_background).pack(fill=tk.X, pady=4)
         ttk.Button(left, text="Загрузить DXF", command=self.load_dxf).pack(fill=tk.X, pady=2)
-        ttk.Button(left, text="Калибровать ppm по DXF", command=self.calibrate_ppm_from_dxf).pack(fill=tk.X, pady=2)
-        self.dxf_info_var = tk.StringVar(value="DXF: не загружен")
-        ttk.Label(left, textvariable=self.dxf_info_var, foreground="#555").pack(anchor="w", pady=2)
-
-        ttk.Separator(left).pack(fill=tk.X, pady=8)
 
         ttk.Label(left, text="Параметры схемы (JSON)", font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
         self.size_x_var = tk.DoubleVar(value=0.9)
         self.size_y_var = tk.DoubleVar(value=0.9)
         self.ppm_var = tk.DoubleVar(value=2500.0)
         self.inverted_var = tk.BooleanVar(value=True)
-        self.auto_size_var = tk.BooleanVar(value=True)
         self.auto_marker_px_var = tk.BooleanVar(value=True)
 
         ttk.Label(left, text="sizeX (m)").pack(anchor="w")
@@ -166,12 +158,9 @@ class ArucoLayoutApp:
         self.ppm_entry.pack(fill=tk.X, pady=2)
 
         ttk.Checkbutton(left, text="colorInverted", variable=self.inverted_var).pack(anchor="w", pady=4)
-        ttk.Checkbutton(
-            left,
-            text="Авторасчет sizeX/sizeY",
-            variable=self.auto_size_var,
-            command=self.on_auto_size_toggle,
-        ).pack(anchor="w", pady=2)
+        ttk.Button(left, text="Калибровать pixelPerMeter", command=self.calibrate_ppm_from_dxf).pack(fill=tk.X, pady=2)
+        self.dxf_info_var = tk.StringVar(value="DXF: не загружен")
+        ttk.Label(left, textvariable=self.dxf_info_var, foreground="#555").pack(anchor="w", pady=2)
 
         ttk.Separator(left).pack(fill=tk.X, pady=8)
 
@@ -217,7 +206,7 @@ class ArucoLayoutApp:
         ).pack(fill=tk.X, pady=4)
 
         ttk.Label(left, text="Клик по изображению: добавить маркер", foreground="#555").pack(anchor="w", pady=6)
-        ttk.Label(left, text="Или введите координаты (m) и нажмите кнопку", foreground="#555").pack(anchor="w")
+        ttk.Label(left, text="Или введите координаты (m) и нажмите Enter", foreground="#555").pack(anchor="w")
 
         coord_row = ttk.Frame(left)
         coord_row.pack(fill=tk.X, pady=4)
@@ -229,9 +218,6 @@ class ArucoLayoutApp:
         ttk.Label(coord_row, text="y").pack(side=tk.LEFT)
         self.coord_y_entry = ttk.Entry(coord_row, textvariable=self.coord_y_m_var, width=10)
         self.coord_y_entry.pack(side=tk.LEFT, padx=4)
-        ttk.Button(left, text="Добавить маркер по координатам", command=self.add_marker_from_inputs).pack(fill=tk.X, pady=3)
-        ttk.Button(left, text="Обновить выбранный маркер", command=self.update_selected_marker).pack(fill=tk.X, pady=2)
-
         ttk.Button(left, text="Удалить выбранный", command=self.delete_selected).pack(fill=tk.X, pady=3)
         ttk.Button(left, text="Очистить все", command=self.clear_markers).pack(fill=tk.X, pady=2)
 
@@ -248,6 +234,9 @@ class ArucoLayoutApp:
             self.tree.column(c, width=58 if c in ("idx", "id") else 84, anchor=tk.CENTER)
         self.tree.pack(fill=tk.BOTH, expand=True, pady=4)
         self.tree.bind("<<TreeviewSelect>>", self.on_tree_select)
+        self.tree.bind("<MouseWheel>", self.on_tree_wheel)
+        self.tree.bind("<Button-4>", lambda _e: self.on_tree_wheel_linux(-1))
+        self.tree.bind("<Button-5>", lambda _e: self.on_tree_wheel_linux(1))
         ttk.Label(left, text="Выделите несколько строк для комплексного экспорта", foreground="#555").pack(anchor="w", pady=(0, 6))
 
         self.canvas = tk.Canvas(right, bg="#1f1f1f", highlightthickness=0)
@@ -261,11 +250,8 @@ class ArucoLayoutApp:
         self.canvas.bind("<B2-Motion>", self.on_pan_move)
         self.canvas.bind("<ButtonRelease-2>", self.on_pan_end)
         self.bind_form_commit_keys()
-        self.on_auto_size_toggle()
+        self.bind_no_wheel_value_change()
         self.on_auto_marker_px_toggle()
-        self.root.bind_all("<MouseWheel>", self.on_global_mousewheel, add="+")
-        self.root.bind_all("<Button-4>", self.on_global_wheel_up, add="+")
-        self.root.bind_all("<Button-5>", self.on_global_wheel_down, add="+")
 
     def load_background(self):
         path = self.askopenfilename_big(filetypes=[("Images", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff")])
@@ -278,7 +264,6 @@ class ArucoLayoutApp:
         self.background_path = Path(path)
         self.background_rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         self.update_size_px_from_mm()
-        self.update_scheme_size_fields()
         self.refresh_tree()
         self.redraw()
 
@@ -302,10 +287,11 @@ class ArucoLayoutApp:
             self.dxf_size_y_m = sy * factor
             self.dxf_path = Path(path)
             self.dxf_info_var.set(f"DXF: {self.dxf_size_x_m:.3f}m x {self.dxf_size_y_m:.3f}m")
+            self.size_x_var.set(round(self.dxf_size_x_m, 3))
+            self.size_y_var.set(round(self.dxf_size_y_m, 3))
         except Exception as exc:
             messagebox.showerror("Ошибка DXF", f"Не удалось прочитать DXF:\n{exc}")
             return
-        self.calibrate_ppm_from_dxf()
 
     @staticmethod
     def dxf_units_to_m(doc):
@@ -394,15 +380,31 @@ class ArucoLayoutApp:
         if self.background_rgb is None:
             messagebox.showwarning("Внимание", "Сначала загрузите фон")
             return
-        if self.dxf_size_x_m is None or self.dxf_size_y_m is None:
-            messagebox.showwarning("Внимание", "Сначала загрузите DXF")
+        size_x_m = float(self.size_x_var.get())
+        size_y_m = float(self.size_y_var.get())
+        if size_x_m <= 0 or size_y_m <= 0:
+            messagebox.showwarning("Внимание", "sizeX и sizeY должны быть больше 0")
             return
         h, w = self.background_rgb.shape[:2]
-        ppm_x = w / max(1e-9, self.dxf_size_x_m)
-        ppm_y = h / max(1e-9, self.dxf_size_y_m)
-        self.ppm_var.set(min(ppm_x, ppm_y))
+        ppm_x = w / max(1e-9, size_x_m)
+        ppm_y = h / max(1e-9, size_y_m)
+        ppm = math.sqrt(max(1e-12, ppm_x * ppm_y))
+        self.ppm_var.set(ppm)
+        ratio_img = w / max(1e-9, h)
+        ratio_target = size_x_m / max(1e-9, size_y_m)
+        ratio_err = abs(ratio_img - ratio_target) / max(ratio_target, 1e-9)
+        if ratio_err > 0.03:
+            messagebox.showwarning(
+                "Предупреждение калибровки",
+                (
+                    "Пропорции фона и sizeX/sizeY отличаются более чем на 3%.\n"
+                    "Использован сбалансированный ppm (геометрическое среднее),\n"
+                    "но по одной оси будет остаточная ошибка масштаба."
+                ),
+            )
         self.update_size_px_from_mm()
-        self.update_scheme_size_fields()
+        self.refresh_tree()
+        self.redraw()
 
     def on_canvas_click(self, event):
         if self.background_rgb is None:
@@ -453,6 +455,9 @@ class ArucoLayoutApp:
         return max(m.marker_id for m in self.markers) + 1
 
     def load_selected_into_form(self):
+        sel = self.tree.selection()
+        if len(sel) != 1:
+            return
         idx = self.selected_marker_index
         if idx is None:
             return
@@ -474,6 +479,8 @@ class ArucoLayoutApp:
         self._form_sync_in_progress = False
 
     def update_selected_marker(self):
+        if len(self.tree.selection()) != 1:
+            return
         idx = self.selected_marker_index
         if idx is None:
             return
@@ -536,6 +543,9 @@ class ArucoLayoutApp:
         sel = self.tree.selection()
         if not sel:
             self.selected_marker_index = None
+            return
+        if len(sel) != 1:
+            # Multi-select is for complex export; keep current editor state untouched.
             return
         idx = self.tree.index(sel[0])
         if idx < 0 or idx >= len(self.markers):
@@ -609,27 +619,39 @@ class ArucoLayoutApp:
             widget = widget.master
         return False
 
-    def on_global_mousewheel(self, event):
-        target = self.root.winfo_containing(self.root.winfo_pointerx(), self.root.winfo_pointery())
-        if target is None:
-            return
-        if self.is_descendant(target, self.left_wrap):
-            delta = int(-1 * (event.delta / 120))
-            self.left_canvas.yview_scroll(delta, "units")
+    def on_param_wheel(self, event):
+        self.left_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        return "break"
 
-    def on_global_wheel_up(self, event):
-        target = self.root.winfo_containing(self.root.winfo_pointerx(), self.root.winfo_pointery())
-        if target is None:
-            return
-        if self.is_descendant(target, self.left_wrap):
-            self.left_canvas.yview_scroll(-1, "units")
+    def on_param_wheel_linux(self, direction):
+        self.left_canvas.yview_scroll(direction, "units")
+        return "break"
 
-    def on_global_wheel_down(self, event):
-        target = self.root.winfo_containing(self.root.winfo_pointerx(), self.root.winfo_pointery())
-        if target is None:
-            return
-        if self.is_descendant(target, self.left_wrap):
-            self.left_canvas.yview_scroll(1, "units")
+    def on_tree_wheel(self, event):
+        self.tree.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        return "break"
+
+    def on_tree_wheel_linux(self, direction):
+        self.tree.yview_scroll(direction, "units")
+        return "break"
+
+    def bind_no_wheel_value_change(self):
+        widgets = [
+            self.size_x_entry,
+            self.size_y_entry,
+            self.ppm_entry,
+            self.id_spin,
+            self.size_px_spin,
+            self.size_mm_entry,
+            self.rotation_entry,
+            self.coord_x_entry,
+            self.coord_y_entry,
+            self.dict_box,
+        ]
+        for w in widgets:
+            w.bind("<MouseWheel>", self.on_param_wheel)
+            w.bind("<Button-4>", lambda _e: self.on_param_wheel_linux(-1))
+            w.bind("<Button-5>", lambda _e: self.on_param_wheel_linux(1))
 
     def on_pan_start(self, event):
         self._pan_last = (event.x, event.y)
@@ -670,54 +692,10 @@ class ArucoLayoutApp:
         return cx_px, cy_px
 
     def update_scheme_size_fields(self):
-        if self.background_rgb is None:
-            return
-        if not self.auto_size_var.get():
-            self.refresh_tree()
-            self.redraw()
-            return
-        ppm = float(self.ppm_var.get())
-        if ppm <= 0:
-            return
-        h, w = self.background_rgb.shape[:2]
-        bg_size_x_m = w / ppm
-        bg_size_y_m = h / ppm
-
-        markers_payload = []
-        for m in self.markers:
-            x_m, y_m = self.px_to_m(m.cx_px, m.cy_px)
-            size_m = float(m.size_mm) / 1000.0
-            half = size_m / 2.0
-            markers_payload.append((x_m - half, x_m + half, y_m - half, y_m + half))
-
-        if markers_payload:
-            min_x = min(v[0] for v in markers_payload)
-            max_x = max(v[1] for v in markers_payload)
-            min_y = min(v[2] for v in markers_payload)
-            max_y = max(v[3] for v in markers_payload)
-            marker_size_x_m = max_x - min_x
-            marker_size_y_m = max_y - min_y
-        else:
-            marker_size_x_m = 0.0
-            marker_size_y_m = 0.0
-
-        size_x_m = max(bg_size_x_m, marker_size_x_m)
-        size_y_m = max(bg_size_y_m, marker_size_y_m)
-
-        # Round up to centimeters (0.01 m).
-        size_x_m = math.ceil(size_x_m * 100.0) / 100.0
-        size_y_m = math.ceil(size_y_m * 100.0) / 100.0
-        self.size_x_var.set(size_x_m)
-        self.size_y_var.set(size_y_m)
+        # Legacy hook: now sizeX/sizeY are always manual.
         self.update_size_px_from_mm()
         self.refresh_tree()
         self.redraw()
-
-    def on_auto_size_toggle(self):
-        state = "disabled" if self.auto_size_var.get() else "normal"
-        self.size_x_entry.configure(state=state)
-        self.size_y_entry.configure(state=state)
-        self.update_scheme_size_fields()
 
     def on_auto_marker_px_toggle(self):
         state = "disabled" if self.auto_marker_px_var.get() else "normal"
@@ -943,6 +921,7 @@ class ArucoLayoutApp:
         ppm_export = max(self.EXPORT_PPM_MIN, int(round(float(self.ppm_var.get()))))
         # Required polarity: black when colorInverted=true, white when false.
         bg_v = 0 if self.inverted_var.get() else 255
+        border_m = 0.01  # 1 cm padding around complex marker
 
         metric = []
         for m in markers:
@@ -984,13 +963,18 @@ class ArucoLayoutApp:
             my1 = my0 + (cy1 - cy0)
             canvas[cy0:cy1, cx0:cx1] = marker_rgb[my0:my1, mx0:mx1]
 
+        pad_px = max(1, int(round(border_m * ppm_export)))
+        canvas = np.pad(canvas, ((pad_px, pad_px), (pad_px, pad_px), (0, 0)), mode="constant", constant_values=bg_v)
+        w_m_out = w_m + 2.0 * border_m
+        h_m_out = h_m + 2.0 * border_m
+
         stem = "complex_marker"
         png_path = out_dir / f"{stem}.png"
         dpi = max(150.0, ppm_export * 0.0254)
         Image.fromarray(canvas).save(png_path, dpi=(dpi, dpi))
 
         svg_path = out_dir / f"{stem}.svg"
-        self.save_embedded_png_svg(canvas, svg_path, w_m, h_m)
+        self.save_embedded_png_svg(canvas, svg_path, w_m_out, h_m_out)
 
     @staticmethod
     def format_mm_tag(size_mm: float):
@@ -1073,15 +1057,8 @@ class ArucoLayoutApp:
             h_px = max(200, int(round(float(self.size_y_var.get()) * ppm)))
             self.background_rgb = np.full((h_px, w_px, 3), 255, dtype=np.uint8)
             self.background_path = None
-        else:
-            # If a background is already loaded, align metric scale to imported scheme size
-            # so imported marker coordinates land on visible canvas area.
-            h, w = self.background_rgb.shape[:2]
-            sx = max(1e-6, imported_size_x)
-            sy = max(1e-6, imported_size_y)
-            ppm_x = w / sx
-            ppm_y = h / sy
-            self.ppm_var.set(min(ppm_x, ppm_y))
+        # If a background is already loaded, keep current calibration/ppm.
+        # Import should not silently re-calibrate scale.
 
         self.markers.clear()
         for raw in data.get("markers", []):
